@@ -6,5 +6,6 @@ precise timestamp to whatever it fetches — that timestamp is what later lets
 us tell whether a piece of information was actually available at a given
 point in time (see ARCHITECTURE.md rule 4: look-ahead bias).
 
-Not started yet — empty on purpose.
+Status: market_data.py (daily OHLCV via yfinance) is built. News, SEC
+filings, macro calendar, and options data collectors are not started yet.
 """
