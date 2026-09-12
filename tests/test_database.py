@@ -8,14 +8,19 @@ what's under test, not any real data source.
 import sqlite3
 
 from stock_scanner.storage.database import (
+    get_all_economic_observations,
+    get_all_news_articles,
+    get_all_sec_filings,
     get_daily_prices,
     get_economic_observations,
+    get_events,
     get_news_articles,
     get_options_chain,
     get_sec_filings,
     init_schema,
     upsert_daily_prices,
     upsert_economic_observations,
+    upsert_events,
     upsert_news_articles,
     upsert_options_chain,
     upsert_sec_filings,
@@ -289,3 +294,112 @@ def test_options_chain_filters_by_expiration_and_option_type():
     puts_only = get_options_chain(conn, "NFLX", option_type="put")
     assert len(puts_only) == 1
     assert puts_only[0]["contract_symbol"] == "B"
+
+
+def test_get_all_news_articles_spans_every_symbol():
+    conn = _fresh_conn()
+    upsert_news_articles(conn, [
+        {"symbol": "NFLX", "article_id": "1", "headline": "NFLX headline", "source": "R",
+         "url": "u1", "published_at": "2026-09-01T00:00:00+00:00", "fetched_at": "2026-09-11T00:00:00+00:00"},
+        {"symbol": "AAPL", "article_id": "2", "headline": "AAPL headline", "source": "R",
+         "url": "u2", "published_at": "2026-09-02T00:00:00+00:00", "fetched_at": "2026-09-11T00:00:00+00:00"},
+    ])
+
+    all_articles = get_all_news_articles(conn)
+    assert len(all_articles) == 2
+    assert {a["symbol"] for a in all_articles} == {"NFLX", "AAPL"}
+
+
+def test_get_all_sec_filings_spans_every_ticker():
+    conn = _fresh_conn()
+    upsert_sec_filings(conn, [
+        {"cik": "1", "accession_number": "A", "ticker": "NFLX", "form": "10-Q",
+         "filing_date": "2026-09-01", "primary_document": "x", "filing_url": "u",
+         "fetched_at": "2026-09-11T00:00:00+00:00"},
+        {"cik": "2", "accession_number": "B", "ticker": "AAPL", "form": "8-K",
+         "filing_date": "2026-09-02", "primary_document": "x", "filing_url": "u",
+         "fetched_at": "2026-09-11T00:00:00+00:00"},
+    ])
+
+    all_filings = get_all_sec_filings(conn)
+    assert len(all_filings) == 2
+    assert {f["ticker"] for f in all_filings} == {"NFLX", "AAPL"}
+
+
+def test_get_all_economic_observations_orders_by_series_then_date():
+    conn = _fresh_conn()
+    upsert_economic_observations(conn, [
+        {"series_id": "UNRATE", "date": "2026-08-01", "value": 4.1,
+         "realtime_start": "2026-08-01", "fetched_at": "2026-09-11T00:00:00+00:00"},
+        {"series_id": "CPIAUCSL", "date": "2026-07-01", "value": 312.332,
+         "realtime_start": "2026-08-13", "fetched_at": "2026-09-11T00:00:00+00:00"},
+        {"series_id": "CPIAUCSL", "date": "2026-08-01", "value": 313.049,
+         "realtime_start": "2026-09-10", "fetched_at": "2026-09-11T00:00:00+00:00"},
+    ])
+
+    all_obs = get_all_economic_observations(conn)
+    assert [(o["series_id"], o["date"]) for o in all_obs] == [
+        ("CPIAUCSL", "2026-07-01"),
+        ("CPIAUCSL", "2026-08-01"),
+        ("UNRATE", "2026-08-01"),
+    ]
+
+
+def test_events_upsert_and_read_back():
+    conn = _fresh_conn()
+    rows = [
+        {"source_type": "news", "source_id": "NFLX:1", "symbol": "NFLX",
+         "event_timestamp": "2026-09-01T10:00:00+00:00", "category": "Earnings",
+         "hypothesized_direction": "bullish", "classification_reason": "matched 'beats estimates'",
+         "fetched_at": "2026-09-11T00:00:00+00:00"},
+        {"source_type": "economic_observation", "source_id": "CPIAUCSL:2026-07-01", "symbol": None,
+         "event_timestamp": "2026-07-01", "category": "Macro: CPI",
+         "hypothesized_direction": None, "classification_reason": "first observation",
+         "fetched_at": "2026-09-11T00:00:00+00:00"},
+    ]
+
+    written = upsert_events(conn, rows)
+    assert written == 2
+
+    events = get_events(conn)
+    assert len(events) == 2
+    assert events[0]["event_timestamp"] == "2026-07-01"  # ordered by event_timestamp ascending
+
+
+def test_events_upsert_overwrites_same_source_type_and_id():
+    conn = _fresh_conn()
+    row = {"source_type": "news", "source_id": "NFLX:1", "symbol": "NFLX",
+           "event_timestamp": "2026-09-01T10:00:00+00:00", "category": "Unclassified",
+           "hypothesized_direction": None, "classification_reason": "no match",
+           "fetched_at": "2026-09-11T00:00:00+00:00"}
+    upsert_events(conn, [row])
+    upsert_events(conn, [dict(row, category="Earnings", hypothesized_direction="bullish")])
+
+    events = get_events(conn)
+    assert len(events) == 1
+    assert events[0]["category"] == "Earnings"
+
+
+def test_events_filters_by_symbol_category_and_source_type():
+    conn = _fresh_conn()
+    upsert_events(conn, [
+        {"source_type": "news", "source_id": "NFLX:1", "symbol": "NFLX",
+         "event_timestamp": "2026-09-01T00:00:00+00:00", "category": "Earnings",
+         "hypothesized_direction": "bullish", "classification_reason": "r",
+         "fetched_at": "2026-09-11T00:00:00+00:00"},
+        {"source_type": "sec_filing", "source_id": "1:A", "symbol": "AAPL",
+         "event_timestamp": "2026-09-02T00:00:00+00:00", "category": "Insider Transaction",
+         "hypothesized_direction": None, "classification_reason": "r",
+         "fetched_at": "2026-09-11T00:00:00+00:00"},
+    ])
+
+    nflx_only = get_events(conn, symbol="NFLX")
+    assert len(nflx_only) == 1
+    assert nflx_only[0]["category"] == "Earnings"
+
+    filings_only = get_events(conn, source_type="sec_filing")
+    assert len(filings_only) == 1
+    assert filings_only[0]["symbol"] == "AAPL"
+
+    earnings_only = get_events(conn, category="Earnings")
+    assert len(earnings_only) == 1

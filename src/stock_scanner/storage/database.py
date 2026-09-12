@@ -46,6 +46,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
     contract itself (same strike, same expiration) still exists. Running
     the collector daily is supposed to accumulate one row per contract per
     day — a real, growing history — not overwrite yesterday's snapshot.
+
+    events (Phase 2) is keyed on (source_type, source_id) — source_id is a
+    natural key back to the raw row it was classified from (e.g. for news,
+    "SYMBOL:article_id"; see events/classifier.py). Classification is a
+    pure, deterministic function of the raw row, so re-running it is
+    idempotent by design: re-classifying the same article overwrites its
+    one events row with the same or updated result, never duplicates it.
     """
     conn.execute(
         """
@@ -121,6 +128,21 @@ def init_schema(conn: sqlite3.Connection) -> None:
             in_the_money INTEGER,
             fetched_at TEXT NOT NULL,
             PRIMARY KEY (contract_symbol, as_of_date)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            symbol TEXT,
+            event_timestamp TEXT NOT NULL,
+            category TEXT NOT NULL,
+            hypothesized_direction TEXT,
+            classification_reason TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (source_type, source_id)
         )
         """
     )
@@ -338,4 +360,83 @@ def get_options_chain(
         query += " AND option_type = ?"
         params.append(option_type)
     query += " ORDER BY as_of_date ASC, expiration ASC, strike ASC"
+    return conn.execute(query, params).fetchall()
+
+
+def get_all_news_articles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Read back every stored news article, across every symbol, oldest
+    published first. Unlike get_news_articles (which needs a symbol), this
+    is what the Phase 2 classifier uses: it doesn't need to know in advance
+    which symbols have news to classify — it just classifies whatever raw
+    data collectors/news.py has already collected.
+    """
+    return conn.execute("SELECT * FROM news_articles ORDER BY published_at ASC").fetchall()
+
+
+def get_all_sec_filings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Read back every stored SEC filing, across every ticker, oldest
+    filing date first. Same "classify whatever exists" reasoning as
+    get_all_news_articles.
+    """
+    return conn.execute("SELECT * FROM sec_filings ORDER BY filing_date ASC").fetchall()
+
+
+def get_all_economic_observations(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Read back every stored economic observation, across every series,
+    ordered by series then date — the ordering matters here specifically:
+    the Phase 2 classifier needs each series' observations in date order to
+    compare each one against the value that came immediately before it.
+    """
+    return conn.execute(
+        "SELECT * FROM economic_observations ORDER BY series_id ASC, date ASC"
+    ).fetchall()
+
+
+def upsert_events(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Insert or replace event rows, keyed on (source_type, source_id).
+    See init_schema's docstring for why that key makes re-classification
+    idempotent by design.
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO events
+            (source_type, source_id, symbol, event_timestamp, category,
+             hypothesized_direction, classification_reason, fetched_at)
+        VALUES
+            (:source_type, :source_id, :symbol, :event_timestamp, :category,
+             :hypothesized_direction, :classification_reason, :fetched_at)
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_events(
+    conn: sqlite3.Connection,
+    symbol: str | None = None,
+    category: str | None = None,
+    source_type: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[sqlite3.Row]:
+    """Read back classified events, oldest first, with optional filters."""
+    query = "SELECT * FROM events WHERE 1=1"
+    params: list = []
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol)
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if source_type:
+        query += " AND source_type = ?"
+        params.append(source_type)
+    if start:
+        query += " AND event_timestamp >= ?"
+        params.append(start)
+    if end:
+        query += " AND event_timestamp <= ?"
+        params.append(end)
+    query += " ORDER BY event_timestamp ASC"
     return conn.execute(query, params).fetchall()
