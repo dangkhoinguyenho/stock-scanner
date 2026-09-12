@@ -6,7 +6,8 @@ precise timestamp to whatever it fetches — that timestamp is what later lets
 us tell whether a piece of information was actually available at a given
 point in time (see ARCHITECTURE.md rule 4: look-ahead bias).
 
-Status: market_data.py (daily OHLCV via yfinance) and sec_edgar.py (SEC
-EDGAR filing history) are built. News, macro calendar, and options data
-collectors are not started yet.
+Status: market_data.py (daily OHLCV via yfinance), sec_edgar.py (SEC EDGAR
+filing history), economic_calendar.py (macro data via FRED), and news.py
+(company headlines via Finnhub) are built. Only the options data collector
+is not started yet — Phase 1's remaining piece.
 """

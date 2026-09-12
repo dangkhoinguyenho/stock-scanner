@@ -36,6 +36,8 @@ class Settings:
 
     sec_edgar_user_agent: str
     alpha_vantage_api_key: str | None
+    fred_api_key: str | None
+    finnhub_api_key: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,6 +45,8 @@ class Settings:
         return cls(
             sec_edgar_user_agent=os.environ.get("SEC_EDGAR_USER_AGENT", ""),
             alpha_vantage_api_key=os.environ.get("ALPHA_VANTAGE_API_KEY") or None,
+            fred_api_key=os.environ.get("FRED_API_KEY") or None,
+            finnhub_api_key=os.environ.get("FINNHUB_API_KEY") or None,
         )
 
 

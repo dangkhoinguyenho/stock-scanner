@@ -70,6 +70,32 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS economic_observations (
+            series_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            value REAL NOT NULL,
+            realtime_start TEXT,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (series_id, date)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS news_articles (
+            symbol TEXT NOT NULL,
+            article_id TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            source TEXT,
+            url TEXT,
+            published_at TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (symbol, article_id)
+        )
+        """
+    )
     conn.commit()
 
 
@@ -111,6 +137,46 @@ def get_daily_prices(
         query += " AND date <= ?"
         params.append(end)
     query += " ORDER BY date ASC"
+    return conn.execute(query, params).fetchall()
+
+
+def upsert_news_articles(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Insert or replace news article rows, keyed on (symbol, article_id).
+    Same upsert reasoning as the other tables.
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO news_articles
+            (symbol, article_id, headline, source, url, published_at, fetched_at)
+        VALUES
+            (:symbol, :article_id, :headline, :source, :url, :published_at, :fetched_at)
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_news_articles(
+    conn: sqlite3.Connection,
+    symbol: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[sqlite3.Row]:
+    """Read back stored articles for a symbol, oldest first, optionally
+    bounded by an inclusive [start, end] range on `published_at` (ISO date
+    or datetime strings — ISO format sorts and compares correctly as plain
+    text, which is why every timestamp in this project is stored that way).
+    """
+    query = "SELECT * FROM news_articles WHERE symbol = ?"
+    params: list = [symbol]
+    if start:
+        query += " AND published_at >= ?"
+        params.append(start)
+    if end:
+        query += " AND published_at <= ?"
+        params.append(end)
+    query += " ORDER BY published_at ASC"
     return conn.execute(query, params).fetchall()
 
 
@@ -156,4 +222,42 @@ def get_sec_filings(
         query += " AND filing_date <= ?"
         params.append(end)
     query += " ORDER BY filing_date DESC"
+    return conn.execute(query, params).fetchall()
+
+
+def upsert_economic_observations(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Insert or replace economic observation rows, keyed on
+    (series_id, date). Same upsert reasoning as the other tables — safe to
+    re-run, and a later re-fetch (e.g. after FRED revises a figure) just
+    overwrites the stored value rather than duplicating.
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO economic_observations
+            (series_id, date, value, realtime_start, fetched_at)
+        VALUES
+            (:series_id, :date, :value, :realtime_start, :fetched_at)
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_economic_observations(
+    conn: sqlite3.Connection,
+    series_id: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[sqlite3.Row]:
+    """Read back stored observations for one series, oldest first."""
+    query = "SELECT * FROM economic_observations WHERE series_id = ?"
+    params: list = [series_id]
+    if start:
+        query += " AND date >= ?"
+        params.append(start)
+    if end:
+        query += " AND date <= ?"
+        params.append(end)
+    query += " ORDER BY date ASC"
     return conn.execute(query, params).fetchall()
