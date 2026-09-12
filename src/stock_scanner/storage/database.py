@@ -32,11 +32,13 @@ def get_connection(db_path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Create the daily_prices table if it doesn't exist yet.
+    """Create every collector's table if it doesn't exist yet.
 
-    `PRIMARY KEY (symbol, date)` means one row per symbol per trading day —
-    re-collecting a day you already have overwrites it (see
-    upsert_daily_prices) instead of creating a duplicate.
+    `PRIMARY KEY (symbol, date)` on daily_prices means one row per symbol
+    per trading day — re-collecting a day you already have overwrites it
+    (see upsert_daily_prices) instead of creating a duplicate. Same idea
+    for sec_filings, keyed on (cik, accession_number) — SEC's own unique
+    ID for a filing, so re-collecting never duplicates a filing either.
     """
     conn.execute(
         """
@@ -50,6 +52,21 @@ def init_schema(conn: sqlite3.Connection) -> None:
             volume INTEGER NOT NULL,
             fetched_at TEXT NOT NULL,
             PRIMARY KEY (symbol, date)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sec_filings (
+            cik TEXT NOT NULL,
+            accession_number TEXT NOT NULL,
+            ticker TEXT,
+            form TEXT NOT NULL,
+            filing_date TEXT NOT NULL,
+            primary_document TEXT,
+            filing_url TEXT,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (cik, accession_number)
         )
         """
     )
@@ -94,4 +111,49 @@ def get_daily_prices(
         query += " AND date <= ?"
         params.append(end)
     query += " ORDER BY date ASC"
+    return conn.execute(query, params).fetchall()
+
+
+def upsert_sec_filings(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Insert or replace SEC filing rows, keyed on (cik, accession_number).
+    Same upsert reasoning as upsert_daily_prices: safe to re-run.
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO sec_filings
+            (cik, accession_number, ticker, form, filing_date,
+             primary_document, filing_url, fetched_at)
+        VALUES
+            (:cik, :accession_number, :ticker, :form, :filing_date,
+             :primary_document, :filing_url, :fetched_at)
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_sec_filings(
+    conn: sqlite3.Connection,
+    cik: str | None = None,
+    form: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[sqlite3.Row]:
+    """Read back stored filings, newest first, with optional filters."""
+    query = "SELECT * FROM sec_filings WHERE 1=1"
+    params: list = []
+    if cik:
+        query += " AND cik = ?"
+        params.append(cik)
+    if form:
+        query += " AND form = ?"
+        params.append(form)
+    if start:
+        query += " AND filing_date >= ?"
+        params.append(start)
+    if end:
+        query += " AND filing_date <= ?"
+        params.append(end)
+    query += " ORDER BY filing_date DESC"
     return conn.execute(query, params).fetchall()
