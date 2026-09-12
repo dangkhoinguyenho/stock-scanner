@@ -55,7 +55,7 @@ def test_classify_news_earnings_bullish():
 
 
 def test_classify_news_earnings_bearish():
-    event = classify_news_article(_article("Company misses estimates, posts loss for the quarter"))
+    event = classify_news_article(_article("Netflix misses estimates, posts loss for the quarter"))
 
     assert event["category"] == "Earnings"
     assert event["hypothesized_direction"] == "bearish"
@@ -69,7 +69,7 @@ def test_classify_news_analyst_revision_bullish():
 
 
 def test_classify_news_regulatory_legal_bearish():
-    event = classify_news_article(_article("Company sued over data privacy violations"))
+    event = classify_news_article(_article("Netflix sued over data privacy violations"))
 
     assert event["category"] == "Regulatory/Legal"
     assert event["hypothesized_direction"] == "bearish"
@@ -101,6 +101,58 @@ def test_classify_news_unclassified_when_no_keyword_matches():
     assert event["category"] == "Unclassified"
     assert event["hypothesized_direction"] is None
     assert "no category keyword matched" in event["classification_reason"]
+
+
+def test_classify_news_generic_to_buy_listicle_is_unclassified():
+    """Real-data finding, 2026-09-12: "to buy" used to match M&A, but every
+    real match on Kenny's data was a generic "growth stocks to buy"
+    investment listicle, not an acquisition. Removed from the keyword list
+    entirely rather than tightened, since "buy the stock" and "buy the
+    company" share no distinguishing words to filter on.
+    """
+    event = classify_news_article(
+        _article("3 of the Best Growth Stocks to Buy for Less Than $100 Right Now")
+    )
+
+    assert event["category"] == "Unclassified"
+
+
+def test_classify_news_bare_fine_is_unclassified():
+    """Real-data finding, 2026-09-12: bare "fine" matched "Is The Business
+    Fine?" (ordinary English, not a legal fine). "fined" (past tense) is
+    kept since it reliably implies an actual penalty.
+    """
+    event = classify_news_article(
+        _article("How Far Can Amazon Stock Fall When The Business Is Fine?")
+    )
+
+    assert event["category"] == "Unclassified"
+
+
+def test_classify_news_relevance_check_rejects_other_company_headline():
+    """Real-data finding, 2026-09-12: Finnhub's company-news endpoint
+    returned this exact headline tagged symbol='NFLX', even though it's
+    about Take-Two, not Netflix. A keyword match on text that never
+    mentions the company shouldn't be attributed to that company.
+    """
+    event = classify_news_article(
+        _article("Take-Two Reiterates FY Bookings Outlook Despite Pre-Orders")
+    )
+
+    assert event["category"] == "Unclassified"
+    assert "does not mention NFLX" in event["classification_reason"]
+
+
+def test_classify_news_relevance_check_allows_real_company_mention():
+    event = classify_news_article(_article("Netflix (NFLX) Shares Pressured by Weak Q2 Outlook"))
+
+    assert event["category"] == "Guidance"
+
+
+def test_classify_news_relevance_check_matches_company_name_not_just_ticker():
+    event = classify_news_article(_article("Netflix's Acquisition Wishlist: Which Target Has the Best Odds?"))
+
+    assert event["category"] == "M&A"
 
 
 def test_classify_sec_filing_quarterly_report():

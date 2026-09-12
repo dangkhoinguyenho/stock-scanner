@@ -74,11 +74,19 @@ NEWS_CATEGORY_KEYWORDS: list[tuple[str, list[str]]] = [
         "subscription price", "price cut", "lowers prices",
     ]),
     ("M&A", [
-        "acquires", "acquisition", "merger", "to buy", "to acquire",
+        # "to buy" was removed 2026-09-12 after real data showed it firing
+        # on generic "growth stocks to buy" investment listicles -- "buy
+        # the stock" and "buy the company" are unrelated meanings of the
+        # same two words, and every real-data match of it was the former.
+        "acquires", "acquisition", "merger", "to acquire",
         "divest", "buyout", "takeover",
     ]),
     ("Regulatory/Legal", [
-        "lawsuit", "sues", "sued", "investigation", "regulatory", "fine",
+        # bare "fine" was removed 2026-09-12: it matched "Is The Business
+        # Fine?" on real data (ordinary-English "fine," not a legal fine).
+        # "fined" (past tense) is kept -- it reliably implies an actual
+        # penalty was imposed, which bare "fine" does not.
+        "lawsuit", "sues", "sued", "investigation", "regulatory",
         "fined", "settlement", "probe", "antitrust",
     ]),
     ("Product", [
@@ -123,11 +131,41 @@ NEWS_DIRECTION_KEYWORDS: dict[str, list[tuple[str, str]]] = {
         # definition of the words themselves (being sued, fined, or probed
         # is bad news about that fact alone) — this is reading the article's
         # own sentiment, not asserting this category always hurts the stock.
+        # (bare "fine" removed 2026-09-12 along with the category keyword above)
         ("lawsuit", "bearish"), ("sues", "bearish"), ("sued", "bearish"),
-        ("fine", "bearish"), ("fined", "bearish"), ("investigation", "bearish"),
+        ("fined", "bearish"), ("investigation", "bearish"),
         ("probe", "bearish"), ("antitrust", "bearish"),
     ],
 }
+
+
+# Tickers we actively watch, mapped to the name(s) a headline genuinely
+# about that company will actually contain. Added 2026-09-12 after real
+# data showed Finnhub's company-news endpoint returning headlines under
+# symbol='NFLX' that had nothing to do with Netflix at all -- e.g. "Take-Two
+# Reiterates FY Bookings Outlook" and "How Far Can Amazon Stock Fall When
+# The Business Is Fine?" both came back tagged NFLX. A category keyword
+# matching text that never mentions the company by name or ticker is not
+# trustworthy evidence of an event *for that company* -- same "don't guess"
+# philosophy as the direction-hypothesis rules above, applied to company
+# attribution instead of sentiment. Known limitation: a ticker with no
+# entry here falls back to just the bare ticker string, which is a weaker
+# check (works for "(AAPL)" style mentions, not "Apple").
+TICKER_ALIASES: dict[str, tuple[str, ...]] = {
+    "NFLX": ("Netflix", "NFLX"),
+}
+
+
+def _headline_mentions_company(headline_lower: str, symbol: str | None) -> bool:
+    """True if `headline_lower` (already lowercased) actually references
+    the company behind `symbol`, per TICKER_ALIASES. No symbol at all
+    means there's nothing to check against, so this returns True (nothing
+    to reject).
+    """
+    if not symbol:
+        return True
+    aliases = TICKER_ALIASES.get(symbol, (symbol,))
+    return any(alias.lower() in headline_lower for alias in aliases)
 
 
 def classify_news_article(article: dict) -> dict:
@@ -138,13 +176,16 @@ def classify_news_article(article: dict) -> dict:
     itself measurable.
     """
     headline = (article.get("headline") or "").lower()
+    symbol = article.get("symbol")
 
     category = "Unclassified"
     category_reason = "no category keyword matched in headline"
+    matched_keyword = None
     for candidate_category, keywords in NEWS_CATEGORY_KEYWORDS:
         matched = next((kw for kw in keywords if kw in headline), None)
         if matched:
             category = candidate_category
+            matched_keyword = matched
             category_reason = f"matched category keyword {matched!r}"
             break
 
@@ -156,6 +197,23 @@ def classify_news_article(article: dict) -> dict:
             direction_reason = f"matched {hypothesized_direction} keyword {keyword!r}"
             break
 
+    reason = f"{category_reason}; {direction_reason}"
+
+    # Relevance check (added 2026-09-12): a category keyword firing on text
+    # that never mentions the company itself is more likely to be another
+    # company's (or the market's) news returned under this symbol than a
+    # real event for it. See TICKER_ALIASES above for the real examples
+    # that motivated this.
+    if category != "Unclassified" and not _headline_mentions_company(headline, symbol):
+        category = "Unclassified"
+        direction = None
+        reason = (
+            f"matched category keyword {matched_keyword!r} but headline does not "
+            f"mention {symbol} by name or ticker -- likely a different company's "
+            f"news returned under this symbol by the news source, not treated as "
+            f"an event for {symbol}"
+        )
+
     return {
         "source_type": "news",
         "source_id": f"{article['symbol']}:{article['article_id']}",
@@ -163,7 +221,7 @@ def classify_news_article(article: dict) -> dict:
         "event_timestamp": article["published_at"],
         "category": category,
         "hypothesized_direction": direction,
-        "classification_reason": f"{category_reason}; {direction_reason}",
+        "classification_reason": reason,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
