@@ -38,15 +38,24 @@ class Settings:
     alpha_vantage_api_key: str | None
     fred_api_key: str | None
     finnhub_api_key: str | None
+    # Which tickers the daily options job (jobs/daily_options_snapshot.py) collects.
+    # Defaults to () so existing code that builds a Settings() without this field
+    # (e.g. tests written before this field existed) still works unchanged.
+    watchlist: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Settings":
         """Build Settings from the current process environment."""
+        watchlist_raw = os.environ.get("WATCHLIST", "NFLX")
+        watchlist = tuple(
+            symbol.strip().upper() for symbol in watchlist_raw.split(",") if symbol.strip()
+        )
         return cls(
             sec_edgar_user_agent=os.environ.get("SEC_EDGAR_USER_AGENT", ""),
             alpha_vantage_api_key=os.environ.get("ALPHA_VANTAGE_API_KEY") or None,
             fred_api_key=os.environ.get("FRED_API_KEY") or None,
             finnhub_api_key=os.environ.get("FINNHUB_API_KEY") or None,
+            watchlist=watchlist,
         )
 
 

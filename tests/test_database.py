@@ -11,11 +11,13 @@ from stock_scanner.storage.database import (
     get_daily_prices,
     get_economic_observations,
     get_news_articles,
+    get_options_chain,
     get_sec_filings,
     init_schema,
     upsert_daily_prices,
     upsert_economic_observations,
     upsert_news_articles,
+    upsert_options_chain,
     upsert_sec_filings,
 )
 
@@ -208,3 +210,82 @@ def test_news_articles_upsert_overwrites_same_symbol_and_article_id():
     fetched = get_news_articles(conn, "NFLX")
     assert len(fetched) == 1
     assert fetched[0]["headline"] == "Corrected headline"
+
+
+def test_options_chain_upsert_and_read_back():
+    conn = _fresh_conn()
+    rows = [
+        {"symbol": "NFLX", "as_of_date": "2026-09-12", "expiration": "2026-09-18",
+         "contract_symbol": "NFLX260918C00700000", "option_type": "call", "strike": 700.0,
+         "last_price": 42.5, "bid": 42.0, "ask": 43.0, "volume": 120, "open_interest": 500,
+         "implied_volatility": 0.35, "in_the_money": 1, "fetched_at": "2026-09-12T14:00:00+00:00"},
+        {"symbol": "NFLX", "as_of_date": "2026-09-12", "expiration": "2026-09-18",
+         "contract_symbol": "NFLX260918P00700000", "option_type": "put", "strike": 700.0,
+         "last_price": 15.0, "bid": 14.7, "ask": 15.3, "volume": 40, "open_interest": 200,
+         "implied_volatility": 0.33, "in_the_money": 0, "fetched_at": "2026-09-12T14:00:00+00:00"},
+    ]
+
+    written = upsert_options_chain(conn, rows)
+    assert written == 2
+
+    fetched = get_options_chain(conn, "NFLX")
+    assert len(fetched) == 2
+    assert fetched[0]["strike"] == 700.0
+
+
+def test_options_chain_same_contract_different_day_accumulates_not_overwrites():
+    """This is the whole point of keying on (contract_symbol, as_of_date)
+    instead of just contract_symbol: the same option contract snapshotted
+    on two different days must produce two rows, building real history.
+    """
+    conn = _fresh_conn()
+    day1 = {"symbol": "NFLX", "as_of_date": "2026-09-12", "expiration": "2026-09-18",
+            "contract_symbol": "NFLX260918C00700000", "option_type": "call", "strike": 700.0,
+            "last_price": 42.5, "bid": 42.0, "ask": 43.0, "volume": 120, "open_interest": 500,
+            "implied_volatility": 0.35, "in_the_money": 1, "fetched_at": "2026-09-12T14:00:00+00:00"}
+    day2 = dict(day1, as_of_date="2026-09-13", last_price=45.0, implied_volatility=0.40,
+                fetched_at="2026-09-13T14:00:00+00:00")
+
+    upsert_options_chain(conn, [day1])
+    upsert_options_chain(conn, [day2])
+
+    fetched = get_options_chain(conn, "NFLX")
+    assert len(fetched) == 2
+    assert [r["as_of_date"] for r in fetched] == ["2026-09-12", "2026-09-13"]
+    assert fetched[1]["last_price"] == 45.0
+
+
+def test_options_chain_same_day_rerun_overwrites_that_day_only():
+    conn = _fresh_conn()
+    row = {"symbol": "NFLX", "as_of_date": "2026-09-12", "expiration": "2026-09-18",
+           "contract_symbol": "NFLX260918C00700000", "option_type": "call", "strike": 700.0,
+           "last_price": 42.5, "bid": 42.0, "ask": 43.0, "volume": 120, "open_interest": 500,
+           "implied_volatility": 0.35, "in_the_money": 1, "fetched_at": "2026-09-12T14:00:00+00:00"}
+    upsert_options_chain(conn, [row])
+    upsert_options_chain(conn, [dict(row, last_price=43.1, fetched_at="2026-09-12T15:30:00+00:00")])
+
+    fetched = get_options_chain(conn, "NFLX", as_of_date="2026-09-12")
+    assert len(fetched) == 1
+    assert fetched[0]["last_price"] == 43.1
+
+
+def test_options_chain_filters_by_expiration_and_option_type():
+    conn = _fresh_conn()
+    upsert_options_chain(conn, [
+        {"symbol": "NFLX", "as_of_date": "2026-09-12", "expiration": "2026-09-18",
+         "contract_symbol": "A", "option_type": "call", "strike": 700.0, "last_price": 1.0,
+         "bid": 1.0, "ask": 1.0, "volume": 1, "open_interest": 1, "implied_volatility": 0.3,
+         "in_the_money": 1, "fetched_at": "2026-09-12T14:00:00+00:00"},
+        {"symbol": "NFLX", "as_of_date": "2026-09-12", "expiration": "2026-10-16",
+         "contract_symbol": "B", "option_type": "put", "strike": 700.0, "last_price": 1.0,
+         "bid": 1.0, "ask": 1.0, "volume": 1, "open_interest": 1, "implied_volatility": 0.3,
+         "in_the_money": 0, "fetched_at": "2026-09-12T14:00:00+00:00"},
+    ])
+
+    sept_only = get_options_chain(conn, "NFLX", expiration="2026-09-18")
+    assert len(sept_only) == 1
+    assert sept_only[0]["contract_symbol"] == "A"
+
+    puts_only = get_options_chain(conn, "NFLX", option_type="put")
+    assert len(puts_only) == 1
+    assert puts_only[0]["contract_symbol"] == "B"

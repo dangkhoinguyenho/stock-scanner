@@ -20,6 +20,10 @@ data/*
 *.csv
 *.parquet
 
+# Job run logs (see jobs/daily_options_snapshot.py + run_daily_options.bat)
+logs/*
+!logs/.gitkeep
+
 # IDE
 .vscode/
 .idea/

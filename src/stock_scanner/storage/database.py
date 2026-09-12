@@ -39,6 +39,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
     (see upsert_daily_prices) instead of creating a duplicate. Same idea
     for sec_filings, keyed on (cik, accession_number) — SEC's own unique
     ID for a filing, so re-collecting never duplicates a filing either.
+
+    options_chain is keyed on (contract_symbol, as_of_date) instead of just
+    contract_symbol, because unlike a filing, an option contract's bid/ask/
+    open interest/implied volatility genuinely change day to day while the
+    contract itself (same strike, same expiration) still exists. Running
+    the collector daily is supposed to accumulate one row per contract per
+    day — a real, growing history — not overwrite yesterday's snapshot.
     """
     conn.execute(
         """
@@ -93,6 +100,27 @@ def init_schema(conn: sqlite3.Connection) -> None:
             published_at TEXT NOT NULL,
             fetched_at TEXT NOT NULL,
             PRIMARY KEY (symbol, article_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS options_chain (
+            symbol TEXT NOT NULL,
+            as_of_date TEXT NOT NULL,
+            expiration TEXT NOT NULL,
+            contract_symbol TEXT NOT NULL,
+            option_type TEXT NOT NULL,
+            strike REAL NOT NULL,
+            last_price REAL,
+            bid REAL,
+            ask REAL,
+            volume INTEGER,
+            open_interest INTEGER,
+            implied_volatility REAL,
+            in_the_money INTEGER,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (contract_symbol, as_of_date)
         )
         """
     )
@@ -260,4 +288,54 @@ def get_economic_observations(
         query += " AND date <= ?"
         params.append(end)
     query += " ORDER BY date ASC"
+    return conn.execute(query, params).fetchall()
+
+
+def upsert_options_chain(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Insert or replace options-chain snapshot rows, keyed on
+    (contract_symbol, as_of_date). Re-running the collector later the same
+    day just refreshes that day's snapshot; running it again tomorrow adds
+    a new row per contract instead of overwriting today's — see
+    init_schema's docstring for why that distinction matters here.
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO options_chain
+            (symbol, as_of_date, expiration, contract_symbol, option_type,
+             strike, last_price, bid, ask, volume, open_interest,
+             implied_volatility, in_the_money, fetched_at)
+        VALUES
+            (:symbol, :as_of_date, :expiration, :contract_symbol, :option_type,
+             :strike, :last_price, :bid, :ask, :volume, :open_interest,
+             :implied_volatility, :in_the_money, :fetched_at)
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_options_chain(
+    conn: sqlite3.Connection,
+    symbol: str,
+    expiration: str | None = None,
+    as_of_date: str | None = None,
+    option_type: str | None = None,
+) -> list[sqlite3.Row]:
+    """Read back stored option contract snapshots for a symbol, optionally
+    filtered to one expiration, one as_of_date (the day we captured the
+    chain), and/or one option_type ("call" or "put").
+    """
+    query = "SELECT * FROM options_chain WHERE symbol = ?"
+    params: list = [symbol]
+    if expiration:
+        query += " AND expiration = ?"
+        params.append(expiration)
+    if as_of_date:
+        query += " AND as_of_date = ?"
+        params.append(as_of_date)
+    if option_type:
+        query += " AND option_type = ?"
+        params.append(option_type)
+    query += " ORDER BY as_of_date ASC, expiration ASC, strike ASC"
     return conn.execute(query, params).fetchall()

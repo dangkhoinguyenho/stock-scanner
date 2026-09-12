@@ -1,11 +1,10 @@
-"""Roadmap Phase 4-5 — historical analysis and the baseline model.
+"""Analysis modules — logic that derives something from data already
+collected (Phase 1), rather than fetching new raw data itself.
 
-Computes event success rate, average/median return, return distribution,
-reaction speed, volatility response, and relative-market performance from
-the event-response database. Phase 5's baseline model is historical
-similarity + base rates — deliberately not ML yet (ARCHITECTURE.md rule 6).
-Direction, magnitude, and speed are always reported as separate outputs,
-never blended into one number (rule 2).
+Each module here states which of the 10 roadmap phases it belongs to, per
+ARCHITECTURE.md rule 8, since "analysis" spans several different phases
+(historical stats is Phase 4, the baseline model is Phase 5, and so on).
 
-Not started yet — empty on purpose.
+Status: options_pricing.py (Black-Scholes theoretical option valuation,
+Phase 7) is built.
 """
